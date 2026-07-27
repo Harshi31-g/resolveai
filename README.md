@@ -359,9 +359,9 @@ Theme:
 
 | Name | Role |
 |------|------|
-| Your Name | Full Stack Developer |
-| Team Member | AI Engineer |
-| Team Member | Backend Developer |
+| Harshitha Arava | Team Lead |
+| Shreeshma Kampe | Project Designer |
+| Asima Firdous |Project Designer |
 
 ---
 
