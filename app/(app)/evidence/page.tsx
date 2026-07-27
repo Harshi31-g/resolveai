@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -16,9 +16,12 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { PageHeader } from '@/components/shared';
-import { getDataset, removeEvidenceFile } from '@/lib/mock-data';
 import { formatRelative } from '@/lib/fairness';
-import type { EvidenceFile, FileType } from '@/lib/types';
+import {
+  useEvidence, useAllEvidence, useDispute, useAddEvidence, useDeleteEvidence,
+} from '@/lib/data-hooks';
+import { useAuth } from '@/lib/auth-context';
+import type { EvidenceFile, FileType, EvidenceType } from '@/lib/types';
 import { toast } from 'sonner';
 
 const FILE_ICON: Record<FileType, typeof FileText> = {
@@ -44,39 +47,67 @@ const MOCK_EXTRACTIONS = [
   { field: 'Customer Name', value: 'Sarah Chen', confidence: 0.89 },
 ];
 
+const detectType = (name: string): FileType => {
+  if (/\.(png|jpe?g|webp|gif)$/i.test(name)) return 'image';
+  if (/\.eml|\.msg$/i.test(name)) return 'email';
+  if (/\.pdf$/i.test(name)) return 'pdf';
+  return 'document';
+};
+
+const detectEvidenceType = (name: string): EvidenceType => {
+  const n = name.toLowerCase();
+  if (/\.eml|\.msg$/i.test(n) || /email|message/.test(n)) return 'email';
+  if (/invoice/.test(n)) return 'invoice';
+  if (/receipt/.test(n)) return 'receipt';
+  if (/tracking|shipment|delivery|ups|fedex|usps/.test(n)) return 'tracking';
+  if (/screenshot/.test(n)) return 'screenshot';
+  if (/contract|agreement/.test(n)) return 'contract';
+  if (/statement|bank/.test(n)) return 'bank_statement';
+  if (/signature/.test(n)) return 'signature';
+  if (/\.(png|jpe?g|webp|gif)$/i.test(n)) return 'photo';
+  return 'other';
+};
+
 function EvidenceContent() {
   const searchParams = useSearchParams();
   const caseId = searchParams.get('case');
-  const ds = getDataset();
-  const initialEvidence = caseId
-    ? ds.evidenceFiles.filter((e) => e.disputeId === caseId)
-    : ds.evidenceFiles.slice(0, 12);
-  const dispute = caseId ? ds.disputes.find((d) => d.id === caseId) : null;
+  const { user } = useAuth();
+
+  // Dispute header + evidence list come from Supabase via React Query.
+  const { data: dispute } = useDispute(caseId || '');
+  const evidenceByDispute = useEvidence(caseId || '');
+  const allEvidence = useAllEvidence();
+  const evidenceList: EvidenceFile[] = caseId
+    ? (evidenceByDispute.data ?? [])
+    : (allEvidence.data ?? []);
+
+  const { mutateAsync: addEvidenceAsync } = useAddEvidence();
+  const { mutateAsync: deleteEvidenceAsync } = useDeleteEvidence();
 
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const [evidenceList, setEvidenceList] = useState<EvidenceFile[]>(initialEvidence);
-  const [selected, setSelected] = useState<EvidenceFile | null>(initialEvidence[0] || null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = evidenceList.find((e) => e.id === selectedId) ?? null;
 
-  const handleDeleteEvidence = (id: string, name: string) => {
-    const ok = removeEvidenceFile(id);
-    if (ok) {
-      const updated = getDataset().evidenceFiles.filter((e) => e.disputeId === (caseId || ''));
-      setEvidenceList(caseId ? updated : getDataset().evidenceFiles.slice(0, 12));
-      if (selected?.id === id) setSelected(null);
-      setRefreshKey((k) => k + 1);
-      toast.success('Evidence deleted', { description: `${name} has been removed.` });
-    } else {
+  // Pre-select the first evidence file once the list loads — mirrors the
+  // original behaviour of initialising the OCR panel to the first file.
+  // (Guarded with a ref so a delete clearing the selection stays cleared.)
+  const didInitSelect = useRef(false);
+  useEffect(() => {
+    if (!didInitSelect.current && evidenceList.length > 0) {
+      didInitSelect.current = true;
+      setSelectedId(evidenceList[0].id);
+    }
+  }, [evidenceList]);
+
+  const handleDeleteEvidence = async (ef: EvidenceFile) => {
+    try {
+      await deleteEvidenceAsync({ id: ef.id, disputeId: ef.disputeId });
+      if (selectedId === ef.id) setSelectedId(null);
+      toast.success('Evidence deleted', { description: `${ef.name} has been removed.` });
+    } catch {
       toast.error('Could not delete evidence file');
     }
-  };
-
-  const detectType = (name: string): FileType => {
-    if (/\.(png|jpe?g|webp|gif)$/i.test(name)) return 'image';
-    if (/\.eml|\.msg$/i.test(name)) return 'email';
-    if (/\.pdf$/i.test(name)) return 'pdf';
-    return 'document';
   };
 
   const handleFiles = useCallback((files: FileList | File[]) => {
@@ -91,7 +122,7 @@ function EvidenceContent() {
       };
       setUploads((prev) => [...prev, item]);
 
-      // Simulate upload progress
+      // Simulate upload progress (visual feedback only)
       let p = 0;
       const upInt = setInterval(() => {
         p += Math.random() * 25 + 15;
@@ -109,6 +140,23 @@ function EvidenceContent() {
                 u.id === id ? { ...u, ocrProgress: 100, ocrDone: true, extracted: MOCK_EXTRACTIONS.slice(0, Math.floor(Math.random() * 3) + 3) } : u
               ));
               toast.success('OCR extraction complete', { description: `${file.name} processed successfully.` });
+
+              // Persist the file record to Supabase now that the simulated
+              // upload + OCR has finished. The evidence list auto-refreshes
+              // via React Query cache invalidation.
+              if (caseId) {
+                addEvidenceAsync({
+                  disputeId: caseId,
+                  name: file.name,
+                  type,
+                  size: file.size,
+                  source: 'system',
+                  uploadedBy: user?.name || 'Unknown',
+                  evidenceType: detectEvidenceType(file.name),
+                })
+                  .then(() => toast.success('Evidence saved', { description: `${file.name} added to the case.` }))
+                  .catch(() => toast.error('Could not save evidence', { description: `${file.name} was not persisted.` }));
+              }
             } else {
               setUploads((prev) => prev.map((u) => u.id === id ? { ...u, ocrProgress: o } : u));
             }
@@ -118,7 +166,7 @@ function EvidenceContent() {
         }
       }, 150);
     });
-  }, []);
+  }, [caseId, user, addEvidenceAsync]);
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -245,11 +293,11 @@ function EvidenceContent() {
                 <div className="grid sm:grid-cols-2 gap-2">
                   {items.map((ef) => {
                     const Icon = FILE_ICON[ef.type];
-                    const active = selected?.id === ef.id;
+                    const active = selectedId === ef.id;
                     return (
                       <div key={ef.id} className="relative group">
                         <button
-                          onClick={() => setSelected(ef)}
+                          onClick={() => setSelectedId(ef.id)}
                           className={`flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-all ${active ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-primary/40'}`}
                         >
                           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted shrink-0">
@@ -286,7 +334,7 @@ function EvidenceContent() {
                               <AlertDialogCancel>Cancel</AlertDialogCancel>
                               <AlertDialogAction
                                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                onClick={() => handleDeleteEvidence(ef.id, ef.name)}
+                                onClick={() => handleDeleteEvidence(ef)}
                               >
                                 Delete
                               </AlertDialogAction>

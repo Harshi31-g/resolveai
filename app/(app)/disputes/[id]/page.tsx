@@ -17,7 +17,11 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
 import { ConfidenceGauge, ScoreBar } from '@/components/confidence-gauge';
-import { getDataset, getDispute } from '@/lib/mock-data';
+import {
+  useDispute, useMerchant, useCardMember, useTransaction,
+  useEvidence, useTimeline, useAIReasoning, useDecision,
+  useComments, useAddComment, useRecordDecision,
+} from '@/lib/data-hooks';
 import {
   formatCurrency, formatDate, formatDateTime, formatRelative,
   initials, outcomeColor, outcomeLabel, priorityColor, statusColor,
@@ -25,6 +29,10 @@ import {
 } from '@/lib/fairness';
 import { useAuth } from '@/lib/auth-context';
 import { toast } from 'sonner';
+import type {
+  Dispute, Merchant, CardMember, Transaction, EvidenceFile,
+  TimelineEvent, AIReasoning, Decision, Comment,
+} from '@/lib/types';
 
 const STATUS_LABELS: Record<string, string> = {
   open: 'Open', evidence_gathering: 'Gathering', under_review: 'Under Review',
@@ -37,10 +45,30 @@ export default function CaseDetailPage() {
   const router = useRouter();
   const { user } = useAuth();
   const id = params.id as string;
-  const dispute = getDispute(id);
-  const ds = getDataset();
+
+  const { data: dispute, isLoading } = useDispute(id) as { data: Dispute | null; isLoading: boolean };
+  const { data: merchant } = useMerchant(dispute?.merchantId ?? '') as { data: Merchant | null };
+  const { data: customer } = useCardMember(dispute?.cardMemberId ?? '') as { data: CardMember | null };
+  const { data: transaction } = useTransaction(dispute?.transactionId ?? '') as { data: Transaction | null };
+  const { data: evidence } = useEvidence(dispute?.id ?? '') as { data: EvidenceFile[] };
+  const { data: timeline } = useTimeline(dispute?.id ?? '') as { data: TimelineEvent[] };
+  const { data: aiReasoning } = useAIReasoning(dispute?.id ?? '') as { data: AIReasoning | null };
+  const { data: decisionData } = useDecision(dispute?.id ?? '') as { data: Decision | null };
+  const { data: comments } = useComments(dispute?.id ?? '') as { data: Comment[] };
+  const { mutateAsync: addCommentAsync } = useAddComment(dispute?.id ?? '');
+  const { mutateAsync: recordDecisionAsync } = useRecordDecision(dispute?.id ?? '');
+
   const [comment, setComment] = useState('');
   const [decision, setDecision] = useState<string | null>(null);
+
+  if (isLoading) {
+    return (
+      <div className="p-8 text-center">
+        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" />
+        <p className="text-sm text-muted-foreground mt-2">Loading dispute…</p>
+      </div>
+    );
+  }
 
   if (!dispute) {
     return (
@@ -51,25 +79,26 @@ export default function CaseDetailPage() {
     );
   }
 
-  const merchant = ds.merchants.find((m) => m.id === dispute.merchantId);
-  const customer = ds.cardMembers.find((c) => c.id === dispute.cardMemberId);
-  const transaction = ds.transactions.find((t) => t.id === dispute.transactionId);
-  const evidence = ds.evidenceFiles.filter((e) => e.disputeId === dispute.id);
-  const fairness = computeFairness(dispute.aiReasoning);
+  const evidenceList: EvidenceFile[] = evidence ?? [];
+  const timelineList: TimelineEvent[] = timeline ?? [];
+  const commentList: Comment[] = comments ?? [];
+  const fairness = computeFairness(aiReasoning ?? undefined);
 
-  const merchantEvidence = evidence.filter((e) => e.source === 'merchant');
-  const customerEvidence = evidence.filter((e) => e.source === 'customer');
-  const systemEvidence = evidence.filter((e) => e.source === 'system');
+  const merchantEvidence = evidenceList.filter((e) => e.source === 'merchant');
+  const customerEvidence = evidenceList.filter((e) => e.source === 'customer');
+  const systemEvidence = evidenceList.filter((e) => e.source === 'system');
 
-  const handleDecision = (outcome: string) => {
+  const handleDecision = async (outcome: string) => {
     setDecision(outcome);
+    await recordDecisionAsync({ outcome, decidedBy: user?.name || 'User', rationale: 'Decision recorded by investigator.' });
     toast.success(`Decision recorded: ${outcomeLabel(outcome as any)}`, {
       description: `Case ${dispute.caseNumber} has been updated.`,
     });
   };
 
-  const handleComment = () => {
+  const handleComment = async () => {
     if (!comment.trim()) return;
+    await addCommentAsync({ text: comment, userName: user?.name || 'User', userRole: user?.role || 'investigator' });
     toast.success('Comment added', { description: 'Your comment has been posted to the case.' });
     setComment('');
   };
@@ -149,7 +178,7 @@ export default function CaseDetailPage() {
             <CardContent>
               <div className="relative space-y-4">
                 <div className="absolute left-2.5 top-1 bottom-1 w-px bg-border" />
-                {dispute.timeline.map((ev, i) => (
+                {timelineList.map((ev, i) => (
                   <motion.div
                     key={ev.id}
                     initial={{ opacity: 0, x: -8 }}
@@ -205,7 +234,7 @@ export default function CaseDetailPage() {
 
         {/* CENTER — AI Summary, Fairness, Explainability */}
         <div className="space-y-4">
-          {dispute.aiReasoning && fairness && (
+          {aiReasoning && fairness && (
             <>
               <Card>
                 <CardHeader>
@@ -214,7 +243,7 @@ export default function CaseDetailPage() {
                       <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary"><BrainCircuit className="h-5 w-5" /></div>
                       <div>
                         <CardTitle>AI Analysis Summary</CardTitle>
-                        <CardDescription>{dispute.aiReasoning.modelVersion} · {formatRelative(dispute.aiReasoning.generatedAt)}</CardDescription>
+                        <CardDescription>{aiReasoning.modelVersion} · {formatRelative(aiReasoning.generatedAt)}</CardDescription>
                       </div>
                     </div>
                     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${outcomeColor(dispute.recommendation)}`}>
@@ -263,14 +292,14 @@ export default function CaseDetailPage() {
                   </div>
 
                   {/* Risk indicators */}
-                  {dispute.aiReasoning.riskIndicators.length > 0 && (
+                  {aiReasoning.riskIndicators.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-2">
                         <AlertTriangle className="h-4 w-4 text-muted-foreground" />
                         <span className="text-sm font-medium">Risk Indicators</span>
                       </div>
                       <div className="space-y-2">
-                        {dispute.aiReasoning.riskIndicators.map((r, i) => (
+                        {aiReasoning.riskIndicators.map((r, i) => (
                           <div key={i} className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm">
                             <span className={`mt-1 h-2 w-2 rounded-full shrink-0 ${r.level === 'high' ? 'bg-destructive' : r.level === 'medium' ? 'bg-warning' : 'bg-success'}`} />
                             <div>
@@ -292,7 +321,7 @@ export default function CaseDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
-                    {dispute.aiReasoning.reasoningChain.map((step, i) => (
+                    {aiReasoning.reasoningChain.map((step, i) => (
                       <motion.div
                         key={step.step}
                         initial={{ opacity: 0, y: 8 }}
@@ -323,8 +352,8 @@ export default function CaseDetailPage() {
               <div className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-muted-foreground" /><CardTitle className="text-sm">Comments</CardTitle></div>
             </CardHeader>
             <CardContent className="space-y-3">
-              {dispute.comments.length === 0 && <p className="text-sm text-muted-foreground italic">No comments yet.</p>}
-              {dispute.comments.map((c) => (
+              {commentList.length === 0 && <p className="text-sm text-muted-foreground italic">No comments yet.</p>}
+              {commentList.map((c) => (
                 <div key={c.id} className="flex gap-3">
                   <Avatar className="h-8 w-8 shrink-0"><AvatarFallback className="text-xs bg-muted">{initials(c.userName)}</AvatarFallback></Avatar>
                   <div className="flex-1">
@@ -378,13 +407,13 @@ export default function CaseDetailPage() {
                 </>
               ) : (
                 <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                  {dispute.decision ? (
+                  {decisionData ? (
                     <>
                       <div className="text-xs text-muted-foreground mb-1">Final decision</div>
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeColor(dispute.decision.outcome)}`}>
-                        {outcomeLabel(dispute.decision.outcome)}
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${outcomeColor(decisionData.outcome)}`}>
+                        {outcomeLabel(decisionData.outcome)}
                       </span>
-                      <p className="text-xs text-muted-foreground mt-2">{dispute.decision.rationale}</p>
+                      <p className="text-xs text-muted-foreground mt-2">{decisionData.rationale}</p>
                     </>
                   ) : (
                     <span className="text-muted-foreground">No decision recorded yet.</span>
@@ -395,18 +424,18 @@ export default function CaseDetailPage() {
           </Card>
 
           {/* Existing decision */}
-          {dispute.decision && (
+          {decisionData && (
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-sm">Recorded Decision</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-muted-foreground">Outcome</span>
-                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${outcomeColor(dispute.decision.outcome)}`}>{outcomeLabel(dispute.decision.outcome)}</span>
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${outcomeColor(decisionData.outcome)}`}>{outcomeLabel(decisionData.outcome)}</span>
                 </div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Decided by</span><span>{dispute.decision.decidedBy}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Type</span><span>{dispute.decision.isAI ? 'AI auto-resolved' : 'Human decision'}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">When</span><span>{formatRelative(dispute.decision.decidedAt)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Decided by</span><span>{decisionData.decidedBy}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Type</span><span>{decisionData.isAI ? 'AI auto-resolved' : 'Human decision'}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">When</span><span>{formatRelative(decisionData.decidedAt)}</span></div>
                 <Separator className="my-2" />
-                <p className="text-xs text-muted-foreground">{dispute.decision.rationale}</p>
+                <p className="text-xs text-muted-foreground">{decisionData.rationale}</p>
               </CardContent>
             </Card>
           )}
@@ -428,14 +457,14 @@ export default function CaseDetailPage() {
           )}
 
           {/* AI reasoning meta */}
-          {dispute.aiReasoning && (
+          {aiReasoning && (
             <Card>
               <CardHeader className="pb-3"><CardTitle className="text-sm">AI Reasoning Metadata</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-xs">
-                <div className="flex justify-between"><span className="text-muted-foreground">Model</span><span className="font-mono">{dispute.aiReasoning.modelVersion}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Evidence used</span><span>{dispute.aiReasoning.evidenceUsed.length}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Evidence ignored</span><span>{dispute.aiReasoning.evidenceIgnored.length}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Policy refs</span><span>{dispute.aiReasoning.policyReferences.length}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Model</span><span className="font-mono">{aiReasoning.modelVersion}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Evidence used</span><span>{aiReasoning.evidenceUsed.length}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Evidence ignored</span><span>{aiReasoning.evidenceIgnored.length}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Policy refs</span><span>{aiReasoning.policyReferences.length}</span></div>
               </CardContent>
             </Card>
           )}

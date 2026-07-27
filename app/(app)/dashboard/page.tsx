@@ -13,9 +13,10 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { MetricCard, PageHeader } from '@/components/shared';
-import { getDataset } from '@/lib/mock-data';
+import { useDisputes, useMerchants } from '@/lib/data-hooks';
 import { formatCurrency, formatRelative, outcomeColor, outcomeLabel, priorityColor, statusColor } from '@/lib/fairness';
 import { useAuth } from '@/lib/auth-context';
+import type { Dispute, Merchant } from '@/lib/types';
 
 const STATUS_LABELS: Record<string, string> = {
   open: 'Open', evidence_gathering: 'Gathering', under_review: 'Under Review',
@@ -25,8 +26,21 @@ const STATUS_LABELS: Record<string, string> = {
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const ds = getDataset();
-  const disputes = ds.disputes;
+  const { data: disputes = [], isLoading } = useDisputes() as { data: Dispute[]; isLoading: boolean };
+  const { data: merchants = [] } = useMerchants() as { data: Merchant[]; isLoading: boolean };
+
+  if (isLoading || disputes.length === 0) {
+    return (
+      <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
+        <div className="flex h-64 items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-8 w-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+            <span className="text-sm text-muted-foreground">Loading dashboard…</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const active = disputes.filter((d) => !['resolved', 'closed'].includes(d.status)).length;
   const pending = disputes.filter((d) => ['pending_decision', 'ai_review'].includes(d.status)).length;
   const resolvedToday = disputes.filter((d) => d.status === 'resolved').length;
@@ -43,7 +57,7 @@ export default function DashboardPage() {
   const merchantSuccess = disputes
     .filter((d) => d.decision)
     .reduce((acc, d) => {
-      const m = ds.merchants.find((x) => x.id === d.merchantId);
+      const m = merchants.find((x) => x.id === d.merchantId);
       if (m) acc[m.name] = (acc[m.name] || 0) + (d.decision!.outcome === 'approve_merchant' ? 1 : 0);
       return acc;
     }, {} as Record<string, number>);
@@ -214,7 +228,7 @@ export default function DashboardPage() {
         <CardContent>
           <div className="space-y-1">
             {recent.map((d, i) => {
-              const m = ds.merchants.find((x) => x.id === d.merchantId);
+              const m = merchants.find((x) => x.id === d.merchantId);
               return (
                 <motion.div
                   key={d.id}

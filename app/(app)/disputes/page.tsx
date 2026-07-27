@@ -6,14 +6,13 @@ import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import {
   Search, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight,
-  Filter, Download, FileSearch, Plus,
+  Filter, Download, FileSearch, Plus, Loader2,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
@@ -22,10 +21,10 @@ import {
   DialogDescription, DialogFooter,
 } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/shared';
-import { getDataset, addDispute } from '@/lib/mock-data';
+import { useDisputes, useMerchants, useCardMembers, useCreateDispute } from '@/lib/data-hooks';
 import { formatCurrency, formatRelative, outcomeColor, outcomeLabel, priorityColor, statusColor } from '@/lib/fairness';
 import { toast } from 'sonner';
-import type { Dispute, DisputeReason } from '@/lib/types';
+import type { Dispute, DisputeReason, Merchant, CardMember } from '@/lib/types';
 
 const STATUS_LABELS: Record<string, string> = {
   open: 'Open', evidence_gathering: 'Gathering', under_review: 'Under Review',
@@ -51,7 +50,10 @@ const PRIORITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, crit
 
 export default function DisputesPage() {
   const router = useRouter();
-  const ds = getDataset();
+  const { data: disputes = [], isLoading } = useDisputes() as { data: Dispute[]; isLoading: boolean };
+  const { data: merchants = [] } = useMerchants() as { data: Merchant[] };
+  const { data: cardMembers = [] } = useCardMembers() as { data: CardMember[] };
+  const { mutateAsync: createDisputeAsync } = useCreateDispute();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
@@ -59,7 +61,6 @@ export default function DisputesPage() {
   const [sortKey, setSortKey] = useState<SortKey>('updatedAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(0);
-  const [refreshKey, setRefreshKey] = useState(0);
   const pageSize = 12;
 
   // New dispute dialog state
@@ -71,14 +72,12 @@ export default function DisputesPage() {
   const [ndDesc, setNdDesc] = useState('');
   const [ndSaving, setNdSaving] = useState(false);
 
-  const disputes = ds.disputes;
-
   const resetNewForm = () => {
     setNdMerchant(''); setNdCustomer(''); setNdAmount('');
     setNdReason('fraud'); setNdDesc('');
   };
 
-  const createDispute = () => {
+  const createDispute = async () => {
     if (!ndMerchant || !ndCustomer || !ndAmount) {
       toast.error('Please fill in all required fields');
       return;
@@ -90,31 +89,36 @@ export default function DisputesPage() {
     }
     const reasonOpt = REASON_OPTIONS.find((r) => r.value === ndReason)!;
     setNdSaving(true);
-    setTimeout(() => {
-      const created = addDispute({
+    try {
+      const created = await createDisputeAsync({
         merchantId: ndMerchant,
         cardMemberId: ndCustomer,
         amount,
         reason: ndReason,
         reasonDescription: ndDesc || reasonOpt.description,
       });
-      setNdSaving(false);
       setNewOpen(false);
       resetNewForm();
       toast.success('Dispute created', { description: `${created.caseNumber} has been filed.` });
       router.push(`/disputes/${created.id}`);
-    }, 600);
+    } catch (err) {
+      toast.error('Failed to create dispute', {
+        description: err instanceof Error ? err.message : 'Please try again.',
+      });
+    } finally {
+      setNdSaving(false);
+    }
   };
 
-  const filtered = useMemo(() => {
-    let list: Dispute[] = ds.disputes;
+  const filtered = useMemo<Dispute[]>(() => {
+    let list: Dispute[] = disputes;
     if (search) {
       const q = search.toLowerCase();
       list = list.filter((d) =>
         d.caseNumber.toLowerCase().includes(q) ||
         d.reasonDescription.toLowerCase().includes(q) ||
-        ds.merchants.find((m) => m.id === d.merchantId)?.name.toLowerCase().includes(q) ||
-        ds.cardMembers.find((c) => c.id === d.cardMemberId)?.name.toLowerCase().includes(q)
+        merchants.find((m) => m.id === d.merchantId)?.name.toLowerCase().includes(q) ||
+        cardMembers.find((c) => c.id === d.cardMemberId)?.name.toLowerCase().includes(q)
       );
     }
     if (statusFilter !== 'all') list = list.filter((d) => d.status === statusFilter);
@@ -132,7 +136,7 @@ export default function DisputesPage() {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return list;
-  }, [disputes, search, statusFilter, priorityFilter, merchantFilter, sortKey, sortDir, refreshKey]);
+  }, [disputes, merchants, cardMembers, search, statusFilter, priorityFilter, merchantFilter, sortKey, sortDir]);
 
   const totalPages = Math.ceil(filtered.length / pageSize);
   const pageItems = filtered.slice(page * pageSize, (page + 1) * pageSize);
@@ -193,7 +197,7 @@ export default function DisputesPage() {
               <SelectTrigger className="w-full lg:w-44"><SelectValue placeholder="Merchant" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All merchants</SelectItem>
-                {ds.merchants.slice(0, 15).map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                {merchants.slice(0, 15).map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -203,109 +207,118 @@ export default function DisputesPage() {
       {/* Table */}
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/30">
-                <tr className="text-left">
-                  <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('caseNumber')}>
-                    <span className="flex items-center gap-1.5">Case <SortIcon k="caseNumber" /></span>
-                  </th>
-                  <th className="px-4 py-3 font-medium">Merchant / Customer</th>
-                  <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('amount')}>
-                    <span className="flex items-center gap-1.5">Amount <SortIcon k="amount" /></span>
-                  </th>
-                  <th className="px-4 py-3 font-medium">Reason</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('priority')}>
-                    <span className="flex items-center gap-1.5">Priority <SortIcon k="priority" /></span>
-                  </th>
-                  <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('aiConfidence')}>
-                    <span className="flex items-center gap-1.5">Confidence <SortIcon k="aiConfidence" /></span>
-                  </th>
-                  <th className="px-4 py-3 font-medium">Investigator</th>
-                  <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('updatedAt')}>
-                    <span className="flex items-center gap-1.5">Updated <SortIcon k="updatedAt" /></span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {pageItems.map((d, i) => {
-                  const m = ds.merchants.find((x) => x.id === d.merchantId);
-                  const c = ds.cardMembers.find((x) => x.id === d.cardMemberId);
-                  return (
-                    <motion.tr
-                      key={d.id}
-                      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
-                      className="border-b last:border-0 hover:bg-accent/40 transition-colors cursor-pointer group"
-                      onClick={() => window.location.href = `/disputes/${d.id}`}
-                    >
-                      <td className="px-4 py-3">
-                        <Link href={`/disputes/${d.id}`} className="font-mono font-medium text-primary hover:underline">
-                          {d.caseNumber}
-                        </Link>
-                        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 max-w-[180px]">{d.reasonDescription}</div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium truncate max-w-[160px]">{m?.name}</div>
-                        <div className="text-xs text-muted-foreground truncate max-w-[160px]">{c?.name}</div>
-                      </td>
-                      <td className="px-4 py-3 font-medium">{formatCurrency(d.amount)}</td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs capitalize max-w-[140px] truncate">{d.reason.replace(/_/g, ' ')}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColor(d.status)}`}>
-                          {STATUS_LABELS[d.status]}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${priorityColor(d.priority)}`}>
-                          {d.priority}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
-                            <div className={`h-full ${d.aiConfidence > 0.85 ? 'bg-success' : d.aiConfidence >= 0.6 ? 'bg-warning' : 'bg-destructive'}`}
-                              style={{ width: `${d.aiConfidence * 100}%` }} />
-                          </div>
-                          <span className="text-xs font-medium">{Math.round(d.aiConfidence * 100)}%</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{d.assignedInvestigatorName || 'Unassigned'}</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{formatRelative(d.updatedAt)}</td>
-                    </motion.tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {pageItems.length === 0 && (
-            <div className="py-16 text-center">
-              <FileSearch className="h-10 w-10 text-muted-foreground/40 mx-auto" />
-              <p className="mt-3 text-sm text-muted-foreground">No disputes match your filters.</p>
-              <Button variant="outline" size="sm" className="mt-3"
-                onClick={() => { setSearch(''); setStatusFilter('all'); setPriorityFilter('all'); setMerchantFilter('all'); }}>
-                Clear filters
-              </Button>
+          {isLoading ? (
+            <div className="py-24 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <p className="text-sm">Loading disputes…</p>
             </div>
-          )}
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between border-t px-4 py-3">
-              <span className="text-xs text-muted-foreground">
-                Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, filtered.length)} of {filtered.length}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <span className="text-xs text-muted-foreground px-2">{page + 1} / {totalPages}</span>
-                <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-muted/30">
+                    <tr className="text-left">
+                      <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('caseNumber')}>
+                        <span className="flex items-center gap-1.5">Case <SortIcon k="caseNumber" /></span>
+                      </th>
+                      <th className="px-4 py-3 font-medium">Merchant / Customer</th>
+                      <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('amount')}>
+                        <span className="flex items-center gap-1.5">Amount <SortIcon k="amount" /></span>
+                      </th>
+                      <th className="px-4 py-3 font-medium">Reason</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('priority')}>
+                        <span className="flex items-center gap-1.5">Priority <SortIcon k="priority" /></span>
+                      </th>
+                      <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('aiConfidence')}>
+                        <span className="flex items-center gap-1.5">Confidence <SortIcon k="aiConfidence" /></span>
+                      </th>
+                      <th className="px-4 py-3 font-medium">Investigator</th>
+                      <th className="px-4 py-3 font-medium cursor-pointer select-none" onClick={() => toggleSort('updatedAt')}>
+                        <span className="flex items-center gap-1.5">Updated <SortIcon k="updatedAt" /></span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map((d, i) => {
+                      const m = merchants.find((x) => x.id === d.merchantId);
+                      const c = cardMembers.find((x) => x.id === d.cardMemberId);
+                      return (
+                        <motion.tr
+                          key={d.id}
+                          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
+                          className="border-b last:border-0 hover:bg-accent/40 transition-colors cursor-pointer group"
+                          onClick={() => window.location.href = `/disputes/${d.id}`}
+                        >
+                          <td className="px-4 py-3">
+                            <Link href={`/disputes/${d.id}`} className="font-mono font-medium text-primary hover:underline">
+                              {d.caseNumber}
+                            </Link>
+                            <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 max-w-[180px]">{d.reasonDescription}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium truncate max-w-[160px]">{m?.name}</div>
+                            <div className="text-xs text-muted-foreground truncate max-w-[160px]">{c?.name}</div>
+                          </td>
+                          <td className="px-4 py-3 font-medium">{formatCurrency(d.amount)}</td>
+                          <td className="px-4 py-3 text-muted-foreground text-xs capitalize max-w-[140px] truncate">{d.reason.replace(/_/g, ' ')}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColor(d.status)}`}>
+                              {STATUS_LABELS[d.status]}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${priorityColor(d.priority)}`}>
+                              {d.priority}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 w-12 rounded-full bg-muted overflow-hidden">
+                                <div className={`h-full ${d.aiConfidence > 0.85 ? 'bg-success' : d.aiConfidence >= 0.6 ? 'bg-warning' : 'bg-destructive'}`}
+                                  style={{ width: `${d.aiConfidence * 100}%` }} />
+                              </div>
+                              <span className="text-xs font-medium">{Math.round(d.aiConfidence * 100)}%</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{d.assignedInvestigatorName || 'Unassigned'}</td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{formatRelative(d.updatedAt)}</td>
+                        </motion.tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-            </div>
+
+              {pageItems.length === 0 && (
+                <div className="py-16 text-center">
+                  <FileSearch className="h-10 w-10 text-muted-foreground/40 mx-auto" />
+                  <p className="mt-3 text-sm text-muted-foreground">No disputes match your filters.</p>
+                  <Button variant="outline" size="sm" className="mt-3"
+                    onClick={() => { setSearch(''); setStatusFilter('all'); setPriorityFilter('all'); setMerchantFilter('all'); }}>
+                    Clear filters
+                  </Button>
+                </div>
+              )}
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between border-t px-4 py-3">
+                  <span className="text-xs text-muted-foreground">
+                    Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, filtered.length)} of {filtered.length}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <span className="text-xs text-muted-foreground px-2">{page + 1} / {totalPages}</span>
+                    <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -325,7 +338,7 @@ export default function DisputesPage() {
               <Select value={ndMerchant} onValueChange={setNdMerchant}>
                 <SelectTrigger><SelectValue placeholder="Select a merchant" /></SelectTrigger>
                 <SelectContent>
-                  {ds.merchants.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                  {merchants.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -334,7 +347,7 @@ export default function DisputesPage() {
               <Select value={ndCustomer} onValueChange={setNdCustomer}>
                 <SelectTrigger><SelectValue placeholder="Select a card member" /></SelectTrigger>
                 <SelectContent>
-                  {ds.cardMembers.slice(0, 25).map((c) => <SelectItem key={c.id} value={c.id}>{c.name} · ••{c.cardLast4}</SelectItem>)}
+                  {cardMembers.slice(0, 25).map((c) => <SelectItem key={c.id} value={c.id}>{c.name} · ••{c.cardLast4}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

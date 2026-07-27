@@ -3,33 +3,56 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { Shield, Mail, Lock, ArrowRight, Building2, Scale } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Scale, User as UserIcon, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth-context';
-import type { UserRole } from '@/lib/types';
 import { ThemeToggle } from '@/components/theme-toggle';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import type { UserRole } from '@/lib/types';
 
-const ROLES: { key: UserRole; label: string; desc: string }[] = [
-  { key: 'admin', label: 'Administrator', desc: 'Full platform control' },
-  { key: 'investigator', label: 'Investigator', desc: 'Review and decide cases' },
-  { key: 'merchant', label: 'Merchant', desc: 'Submit evidence, track cases' },
-  { key: 'cardmember', label: 'Card Member', desc: 'File and follow disputes' },
+const ROLES: { key: UserRole; label: string }[] = [
+  { key: 'admin', label: 'Administrator' },
+  { key: 'investigator', label: 'Investigator' },
+  { key: 'merchant', label: 'Merchant' },
+  { key: 'cardmember', label: 'Card Member' },
 ];
 
 export default function LoginPage() {
   const router = useRouter();
-  const { loginAs } = useAuth();
+  const { signIn, signUp } = useAuth();
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [selectedRole, setSelectedRole] = useState<UserRole>('investigator');
-  const [mode, setMode] = useState<'signin' | 'forgot'>('signin');
+  const [fullName, setFullName] = useState('');
+  const [role, setRole] = useState<UserRole>('investigator');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    loginAs(selectedRole);
-    router.push('/dashboard');
+    setError(null);
+    setLoading(true);
+
+    if (mode === 'signin') {
+      const { error: err } = await signIn(email, password);
+      setLoading(false);
+      if (err) { setError(err); return; }
+      router.push('/dashboard');
+    } else {
+      if (password.length < 6) {
+        setError('Password must be at least 6 characters');
+        setLoading(false);
+        return;
+      }
+      const { error: err } = await signUp(email, password, fullName || email.split('@')[0], role);
+      setLoading(false);
+      if (err) { setError(err); return; }
+      router.push('/dashboard');
+    }
   };
 
   return (
@@ -61,7 +84,7 @@ export default function LoginPage() {
               transition={{ duration: 0.6, delay: 0.1 }}
               className="text-blue-100/80 text-lg"
             >
-              Resolve chargebacks in minutes with transparent evidence scoring, AI reasoning, and a real-time audit trail trusted by enterprises worldwide.
+              Resolve chargebacks in minutes with transparent evidence scoring, AI reasoning, and a real-time audit trail.
             </motion.p>
             <motion.div
               initial={{ opacity: 0 }}
@@ -81,9 +104,7 @@ export default function LoginPage() {
               ))}
             </motion.div>
           </div>
-          <div className="text-xs text-blue-100/60">
-            SOC 2 Type II · PCI DSS · GDPR Compliant
-          </div>
+          <div className="text-xs text-blue-100/60">SOC 2 Type II · PCI DSS · GDPR Compliant</div>
         </div>
       </div>
 
@@ -107,94 +128,85 @@ export default function LoginPage() {
           >
             <div className="space-y-2">
               <h2 className="font-display text-2xl font-bold tracking-tight">
-                {mode === 'signin' ? 'Welcome back' : 'Reset your password'}
+                {mode === 'signin' ? 'Welcome back' : 'Create your account'}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {mode === 'signin'
                   ? 'Sign in to your ResolveAI workspace.'
-                  : 'Enter your email and we\'ll send a reset link.'}
+                  : 'Sign up to start resolving disputes with AI.'}
               </p>
             </div>
 
-            {mode === 'signin' ? (
-              <>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="email" type="email" placeholder="you@company.com"
-                        value={email} onChange={(e) => setEmail(e.target.value)}
-                        className="pl-9" required
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="password">Password</Label>
-                      <button type="button" onClick={() => setMode('forgot')}
-                        className="text-xs text-primary hover:underline">
-                        Forgot password?
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input id="password" type="password" placeholder="••••••••"
-                        value={password} onChange={(e) => setPassword(e.target.value)}
-                        className="pl-9" required />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Quick access role</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {ROLES.map((r) => (
-                        <button key={r.key} type="button"
-                          onClick={() => setSelectedRole(r.key)}
-                          className={`text-left rounded-lg border p-3 transition-all ${
-                            selectedRole === r.key
-                              ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                              : 'border-border hover:border-primary/40'
-                          }`}>
-                          <div className="text-sm font-medium">{r.label}</div>
-                          <div className="text-xs text-muted-foreground mt-0.5">{r.desc}</div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <Button type="submit" className="w-full" size="lg">
-                    Sign in <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
-                </form>
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t" />
-                  </div>
-                  <div className="relative flex justify-center text-xs uppercase">
-                    <span className="bg-background px-2 text-muted-foreground">or</span>
-                  </div>
-                </div>
-                <Button variant="outline" className="w-full" size="lg" onClick={handleSubmit}>
-                  <Building2 className="mr-2 h-4 w-4" /> Continue with Google
-                </Button>
-                <p className="text-xs text-center text-muted-foreground flex items-center justify-center gap-1.5">
-                  <Shield className="h-3.5 w-3.5" /> Protected by 256-bit encryption
-                </p>
-              </>
-            ) : (
-              <form onSubmit={(e) => { e.preventDefault(); setMode('signin'); }}
-                className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="reset-email">Email</Label>
-                  <Input id="reset-email" type="email" placeholder="you@company.com" required />
-                </div>
-                <Button type="submit" className="w-full" size="lg">Send reset link</Button>
-                <button type="button" onClick={() => setMode('signin')}
-                  className="block w-full text-center text-sm text-primary hover:underline">
-                  Back to sign in
-                </button>
-              </form>
+            {error && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                {error}
+              </div>
             )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {mode === 'signup' && (
+                <div className="space-y-2">
+                  <Label htmlFor="name">Full name</Label>
+                  <div className="relative">
+                    <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="name" placeholder="Alex Morgan"
+                      value={fullName} onChange={(e) => setFullName(e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="email" type="email" placeholder="you@company.com"
+                    value={email} onChange={(e) => setEmail(e.target.value)}
+                    className="pl-9" required
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="password" type="password" placeholder="••••••••"
+                    value={password} onChange={(e) => setPassword(e.target.value)}
+                    className="pl-9" required minLength={6}
+                  />
+                </div>
+              </div>
+              {mode === 'signup' && (
+                <div className="space-y-2">
+                  <Label>Role</Label>
+                  <Select value={role} onValueChange={(v) => setRole(v as UserRole)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {ROLES.map((r) => <SelectItem key={r.key} value={r.key}>{r.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              <Button type="submit" className="w-full" size="lg" disabled={loading}>
+                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {mode === 'signin' ? 'Sign in' : 'Create account'}
+                {!loading && <ArrowRight className="ml-2 h-4 w-4" />}
+              </Button>
+            </form>
+
+            <p className="text-sm text-center text-muted-foreground">
+              {mode === 'signin' ? "Don't have an account? " : 'Already have an account? '}
+              <button
+                type="button"
+                onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null); }}
+                className="text-primary font-medium hover:underline"
+              >
+                {mode === 'signin' ? 'Sign up' : 'Sign in'}
+              </button>
+            </p>
           </motion.div>
         </div>
       </div>

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, LogOut, Menu, Search, User as UserIcon, ChevronDown } from 'lucide-react';
+import { LogOut, Menu, Search, User as UserIcon, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
@@ -15,20 +15,17 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { CommandPalette } from '@/components/command-palette';
-import { getDataset } from '@/lib/mock-data';
-import { formatRelative, initials } from '@/lib/fairness';
+import { initials } from '@/lib/fairness';
 import { ROLE_LABELS } from '@/lib/nav';
 import { MobileNav } from '@/components/mobile-nav';
 
 export function TopBar() {
-  const { user, logout } = useAuth();
+  const { user, signOut } = useAuth();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const notifications = getDataset().notifications.slice(0, 8);
-  const unread = notifications.filter((n) => !n.read).length;
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     router.push('/login');
   };
 
@@ -52,40 +49,6 @@ export function TopBar() {
           <Search className="h-5 w-5" />
         </Button>
         <ThemeToggle />
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative" aria-label="Notifications">
-              <Bell className="h-4 w-4" />
-              {unread > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold text-destructive-foreground">
-                  {unread}
-                </span>
-              )}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-80">
-            <DropdownMenuLabel className="flex items-center justify-between">
-              Notifications
-              <span className="text-xs font-normal text-muted-foreground">{unread} unread</span>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <div className="max-h-80 overflow-auto">
-              {notifications.map((n) => (
-                <DropdownMenuItem key={n.id} className="flex flex-col items-start gap-1 py-3 cursor-pointer" asChild>
-                  <a href={n.link || '#'}>
-                    <div className="flex w-full items-center gap-2">
-                      {!n.read && <span className="h-2 w-2 rounded-full bg-primary shrink-0" />}
-                      <span className="text-sm font-medium flex-1 truncate">{n.title}</span>
-                      <span className="text-[10px] text-muted-foreground shrink-0">{formatRelative(n.timestamp)}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2 w-full">{n.description}</p>
-                  </a>
-                </DropdownMenuItem>
-              ))}
-            </div>
-          </DropdownMenuContent>
-        </DropdownMenu>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
